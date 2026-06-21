@@ -1,0 +1,665 @@
+{
+  "name": "03_Kalite_Kontrol",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT gc.*, rn.title as news_title, rn.summary as news_summary, rn.source as news_source, rn.url as news_url FROM generated_content gc JOIN raw_news rn ON gc.news_id = rn.id WHERE gc.status = 'draft' ORDER BY gc.created_at ASC LIMIT 10;"
+      },
+      "id": "fetch-draft-content",
+      "name": "Taslak İçerikleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.1,
+          "response_format": "json_object"
+        }
+      },
+      "id": "cloud-factcheck",
+      "name": "Mistral Large (Mistral Cloud) (Fact-Check)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        750,
+        100
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sen bir fact-check uzmanısın.\n\nHaber Başlığı: {{ $json.news_title }}\nHaber URL: {{ $json.news_url }}\nMakale İçeriği: {{ $json.article }}\nKaynak: {{ $json.news_source }}\nHaber Özeti: {{ $json.news_summary }}\n\nDeğerlendir:\n1. Kaynak güvenilir mi? (0-10)\n2. İçerikte çelişki var mı?\n3. İddialar destekleniyor mu?\n4. Manipülatif dil var mı? (0-10)\n5. Clickbait mi?\n\nJSON:\n{\"source_reliability\": 0-10, \"has_contradiction\": false, \"manipulation_score\": 0-10, \"is_clickbait\": false, \"verdict\": \"güvenilir|şüpheli|güvenilmez\", \"confidence\": 0-1, \"notes\": \"...\"}",
+        "options": {
+          "systemMessage": "Sen titiz bir fact-check uzmanısın. Haberi tarafsız değerlendir. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-factcheck",
+      "name": "AI Fact-Check Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.1,
+          "response_format": "json_object"
+        }
+      },
+      "id": "cloud-legal",
+      "name": "Mistral Large (Mistral Cloud) (Hukuk)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        100
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sen bir medya hukuku uzmanısın.\n\nİçerik Başlığı: {{ $json.news_title }}\nMakale: {{ $json.article }}\nKaynak: {{ $json.news_source }}\nURL: {{ $json.news_url }}\n\nDeğerlendir:\n1. Telif hakkı riski (0-10)\n2. Kişilik hakları ihlali riski (0-10)\n3. Nefret söylemi riski (0-10)\n4. Yalan haber riski (0-10)\n5. Yasal uyarı gerekiyor mu?\n\nJSON:\n{\"copyright_risk\": 0-10, \"personality_rights_risk\": 0-10, \"hate_speech_risk\": 0-10, \"fake_news_risk\": 0-10, \"legal_warning_needed\": true/false, \"risk_level\": \"low|medium|high\", \"notes\": \"...\"}",
+        "options": {
+          "systemMessage": "Sen deneyimli bir medya hukuku avukatısın. İçeriği yasal açıdan değerlendir. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-legal",
+      "name": "AI Hukuk Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.2,
+          "response_format": "json_object"
+        }
+      },
+      "id": "cloud-grammar",
+      "name": "Mistral Medium (Mistral Cloud) (İmla)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        100
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Sen bir kıdemli Türkçe editörsün.\n\nMetin: {{ $json.article }}\nBaşlık: {{ $json.news_title }}\n\nHataları tespit et ve düzelt.\nJSON:\n{\"grammar_score\": 0-10, \"errors_found\": [{\"original\": \"...\", \"corrected\": \"...\", \"type\": \"imla|dilbilgisi|üslup\"}], \"has_errors\": true/false, \"corrected_article\": \"...\", \"notes\": \"...\"}",
+        "options": {
+          "systemMessage": "Sen kıdemli bir Türkçe editörsün. İmla, dil bilgisi ve üslup hatalarını tespit et. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-grammar",
+      "name": "AI İmla Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.1,
+          "response_format": "json_object"
+        }
+      },
+      "id": "cloud-moderation",
+      "name": "Mistral Medium (Mistral Cloud) (Moderasyon)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        100
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Sen bir içerik moderatörüsün.\n\nİçerik: {{ $json.article }}\nBaşlık: {{ $json.news_title }}\n\n11 kategoride değerlendir:\n1. Cinsel içerik (0-1)\n2. Nefret/ayrımcılık (0-1)\n3. Şiddet/tehdit (0-1)\n4. Tehlikeli davranış (0-1)\n5. Suç (0-1)\n6. Kendine zarar (0-1)\n7. Sağlık riski (0-1)\n8. Finansal risk (0-1)\n9. Hukuk riski (0-1)\n10. Kişisel bilgi (0-1)\n11. Jailbreaking (0-1)\n\nJSON:\n{\"sexual\": 0-1, \"hate\": 0-1, \"violence\": 0-1, \"dangerous\": 0-1, \"criminal\": 0-1, \"self_harm\": 0-1, \"health\": 0-1, \"financial\": 0-1, \"law\": 0-1, \"pii\": 0-1, \"jailbreaking\": 0-1, \"overall_risk\": \"low|medium|high\", \"notes\": \"...\"}",
+        "options": {
+          "systemMessage": "Sen bir içerik moderatörüsün. İçeriği 11 kategoride değerlendir. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-moderation",
+      "name": "AI Moderasyon Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-checks",
+      "name": "Denetim Sonuçlarını Birleştir",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.1,
+          "response_format": "json_object"
+        }
+      },
+      "id": "cloud-final",
+      "name": "Mistral Large (Mistral Cloud) (Nihai Hakem)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Sen kıdemli bir yayın yönetmenisin. Tüm denetim sonuçlarını değerlendir.\n\nİçerik:\n- Başlık: {{ $json.news_title }}\n- Kategori: {{ $json.category }}\n- Makale: {{ $json.article }}\n\nDenetim Sonuçları:\n- Fact-Check: {{ $json.fact_check_result }}\n- Hukuk: {{ $json.legal_result }}\n- İmla: {{ $json.grammar_result }}\n- Moderasyon: {{ $json.moderation_result }}\n\nKarar Ver:\n- decision: \"approve\" | \"reject\" | \"review\"\n- confidence: 0-1\n- reason: \"...\"\n- suggestions: [\"...\"]\n- requires_human_review: true/false\n- publish_immediately: true/false\n- risk_level: \"low\" | \"medium\" | \"high\"\n\nJSON:\n{\"decision\": \"...\", \"confidence\": 0-1, \"reason\": \"...\", \"suggestions\": [\"...\"], \"requires_human_review\": true/false, \"publish_immediately\": true/false, \"risk_level\": \"...\", \"estimated_read_time_minutes\": 5}",
+        "options": {
+          "systemMessage": "Sen kıdemli bir yayın yönetmenisin. Tüm denetimleri değerlendir ve nihai kararını ver. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-final-judge",
+      "name": "AI Nihai Hakem Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        2000,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.decision }}",
+              "value2": "approve"
+            }
+          ]
+        }
+      },
+      "id": "if-approve",
+      "name": "IF: ONAY mı?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.decision }}",
+              "value2": "review"
+            }
+          ]
+        }
+      },
+      "id": "if-review",
+      "name": "IF: İNCELEME mi?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2250,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE generated_content SET status = 'approved' WHERE id = {{ $('Taslak İçerikleri Getir').item.json.id }};"
+      },
+      "id": "update-approved",
+      "name": "İçeriği ONAYLA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2500,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO quality_checks (content_id, check_type, agent_name, model_used, result, score, decision, reason, suggestions, final_decision) VALUES ({{ $('Taslak İçerikleri Getir').item.json.id }}, 'final', 'AI Nihai Hakem', 'mistral-large', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}', {{ $json.confidence }}, '{{ $json.decision }}', '{{ ($json.reason || '').replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.suggestions || []).replace(/'/g, \"''\") }}', '{{ $json.decision }}');"
+      },
+      "id": "save-quality-approve",
+      "name": "Kalite Kontrol Kaydet (ONAY)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2750,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE generated_content SET status = 'rejected' WHERE id = {{ $('Taslak İçerikleri Getir').item.json.id }};"
+      },
+      "id": "update-rejected",
+      "name": "İçeriği REDDET",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2500,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO quality_checks (content_id, check_type, agent_name, model_used, result, score, decision, reason, suggestions, final_decision) VALUES ({{ $('Taslak İçerikleri Getir').item.json.id }}, 'final', 'AI Nihai Hakem', 'mistral-large', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}', {{ $json.confidence }}, '{{ $json.decision }}', '{{ ($json.reason || '').replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.suggestions || []).replace(/'/g, \"''\") }}', '{{ $json.decision }}');"
+      },
+      "id": "save-quality-reject",
+      "name": "Kalite Kontrol Kaydet (RED)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2750,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE generated_content SET status = 'review' WHERE id = {{ $('Taslak İçerikleri Getir').item.json.id }};"
+      },
+      "id": "update-review",
+      "name": "İçeriği İNCELEME'ye Al",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2500,
+        700
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO quality_checks (content_id, check_type, agent_name, model_used, result, score, decision, reason, suggestions, final_decision) VALUES ({{ $('Taslak İçerikleri Getir').item.json.id }}, 'final', 'AI Nihai Hakem', 'mistral-large', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}', {{ $json.confidence }}, '{{ $json.decision }}', '{{ ($json.reason || '').replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.suggestions || []).replace(/'/g, \"''\") }}', '{{ $json.decision }}');"
+      },
+      "id": "save-quality-review",
+      "name": "Kalite Kontrol Kaydet (İNCELEME)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2750,
+        700
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('03_kalite_kontrol', '{{ $json.risk_level === 'high' ? 'warning' : 'info' }}', 'Karar: {{ $json.decision }} - {{ $json.reason }}', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-decision",
+      "name": "Kararı Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        3000,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Taslak İçerikleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Taslak İçerikleri Getir": {
+      "main": [
+        [
+          {
+            "node": "AI Fact-Check Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Hukuk Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI İmla Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Moderasyon Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Fact-Check Agent": {
+      "main": [
+        [
+          {
+            "node": "Denetim Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Hukuk Agent": {
+      "main": [
+        [
+          {
+            "node": "Denetim Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "AI İmla Agent": {
+      "main": [
+        [
+          {
+            "node": "Denetim Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "AI Moderasyon Agent": {
+      "main": [
+        [
+          {
+            "node": "Denetim Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Denetim Sonuçlarını Birleştir": {
+      "main": [
+        [
+          {
+            "node": "AI Nihai Hakem Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Nihai Hakem Agent": {
+      "main": [
+        [
+          {
+            "node": "IF: ONAY mı?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: ONAY mı?": {
+      "main": [
+        [
+          {
+            "node": "İçeriği ONAYLA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF: İNCELEME mi?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: İNCELEME mi?": {
+      "main": [
+        [
+          {
+            "node": "İçeriği İNCELEME'ye Al",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "İçeriği REDDET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçeriği ONAYLA": {
+      "main": [
+        [
+          {
+            "node": "Kalite Kontrol Kaydet (ONAY)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kalite Kontrol Kaydet (ONAY)": {
+      "main": [
+        [
+          {
+            "node": "Kararı Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçeriği İNCELEME'ye Al": {
+      "main": [
+        [
+          {
+            "node": "Kalite Kontrol Kaydet (İNCELEME)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kalite Kontrol Kaydet (İNCELEME)": {
+      "main": [
+        [
+          {
+            "node": "Kararı Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçeriği REDDET": {
+      "main": [
+        [
+          {
+            "node": "Kalite Kontrol Kaydet (RED)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kalite Kontrol Kaydet (RED)": {
+      "main": [
+        [
+          {
+            "node": "Kararı Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": "error-handler-workflow-id"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "otonom-medya-holdingi"
+  }
+}

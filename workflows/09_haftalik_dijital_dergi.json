@@ -1,0 +1,296 @@
+{
+  "name": "09_Haftalik_Dijital_Dergi",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 7,
+              "triggerAtHour": 6,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-magazine",
+      "name": "Haftalık Dergi Trigger (Pazar 06:00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT gc.*, rn.title as news_title, rn.url as news_url, rn.source as news_source, rn.category FROM generated_content gc JOIN raw_news rn ON gc.news_id = rn.id WHERE gc.status = 'published' AND gc.created_at > NOW() - INTERVAL '7 days' ORDER BY gc.word_count DESC, rn.importance_score DESC LIMIT 20;"
+      },
+      "id": "fetch-week-best",
+      "name": "Haftanın En İyi İçeriklerini Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.7,
+          "response_format": "json_object",
+          "max_tokens": 8000
+        }
+      },
+      "id": "cloud-magazine",
+      "name": "Mistral Large (Mistral Cloud) (Dergi Editörü)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        750,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sen bir dijital dergi editörüsün. Haftanın en iyi içeriklerini kullanarak profesyonel bir dijital dergi oluştur.\n\n## HAFTANIN İÇERİKLERİ:\n{{ $json.contents }}\n\n## DERGİ YAPISI:\n1. KAPAK SAYFASI\n   - Dergi adı: \"OTONOM MEDYA HAFTALIK\"\n   - Tarih: Bu hafta ({{ $now.toFormat(\"dd MMMM yyyy\") }})\n   - Kapak hikayesi (en önemli haber)\n   - Kapak görseli için prompt\n\n2. İÇİNDEKİLER\n   - Kategori bazlı listeleme\n\n3. TEKNOLOJİ BÖLÜMÜ (3-5 haber)\n4. EKONOMİ BÖLÜMÜ (3-5 haber)\n5. KÜLTÜR-SANAT BÖLÜMÜ (2-3 haber)\n6. BİLİM BÖLÜMÜ (2-3 haber)\n7. MAGAZİN BÖLÜMÜ (2-3 haber)\n8. HAFTANIN ANALİZİ (editör yorumu)\n9. GELECEK HAFTA ÖNGÖRÜLERİ\n\n## ÇIKTI FORMATI (JSON):\n{\n  \"magazine\": {\n    \"title\": \"OTONOM MEDYA HAFTALIK\",\n    \"date\": \"dd MMMM yyyy\",\n    \"issue_number\": 1,\n    \"cover_story\": {\"title\": \"...\", \"summary\": \"...\", \"image_prompt\": \"...\"},\n    \"sections\": [\n      {\n        \"name\": \"TEKNOLOJİ\",\n        \"articles\": [{\"title\": \"...\", \"summary\": \"...\", \"source\": \"...\"}]\n      }\n    ],\n    \"editor_note\": \"...\",\n    \"next_week_preview\": \"...\"\n  }\n}",
+        "options": {
+          "systemMessage": "Sen kıdemli bir dijital dergi editörüsün. Haftanın en iyi içeriklerini seç, düzenle ve profesyonel bir dergi oluştur. Türkçe yaz. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-magazine-agent",
+      "name": "AI Dergi Editörü Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dergi içeriğini HTML/PDF formatına dönüştür\nconst content = $input.first().json.output || $input.first().json;\nconst magazine = content.magazine || content;\n\nfunction generateHTML(mag) {\n  const sections = mag.sections || [];\n  let sectionsHTML = '';\n  \n  for (const section of sections) {\n    const articles = section.articles || [];\n    let articlesHTML = articles.map(a => \n      `<article>\n        <h3>${a.title || ''}</h3>\n        <p>${a.summary || ''}</p>\n        <small>Kaynak: ${a.source || ''}</small>\n      </article>`\n    ).join('\\n');\n    \n    sectionsHTML += `<section>\n      <h2>${section.name || ''}</h2>\n      ${articlesHTML}\n    </section>\\n`;\n  }\n  \n  return `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }\n    .cover { text-align: center; padding: 80px 20px; border-bottom: 3px solid #333; }\n    .cover h1 { font-size: 36px; margin-bottom: 10px; }\n    .cover h2 { font-size: 24px; color: #666; }\n    .toc { margin: 40px 0; }\n    .toc ul { list-style: none; padding: 0; }\n    .toc li { padding: 8px 0; border-bottom: 1px solid #eee; }\n    section { margin: 40px 0; page-break-inside: avoid; }\n    section h2 { color: #1a5fb4; border-bottom: 2px solid #1a5fb4; padding-bottom: 10px; }\n    article { margin: 20px 0; padding: 20px; background: #f9f9f9; border-radius: 8px; }\n    article h3 { margin-top: 0; color: #333; }\n    .editor-note { background: #fff3cd; padding: 20px; border-radius: 8px; margin: 40px 0; }\n    footer { text-align: center; margin-top: 60px; padding-top: 20px; border-top: 1px solid #eee; color: #666; }\n  </style>\n</head>\n<body>\n  <div class=\"cover\">\n    <h1>${mag.title || 'OTONOM MEDYA HAFTALIK'}</h1>\n    <h2>Sayı #${mag.issue_number || 1} | ${mag.date || ''}</h2>\n    ${mag.cover_story ? `<h3>📰 KAPAK: ${mag.cover_story.title}</h3><p>${mag.cover_story.summary}</p>` : ''}\n  </div>\n  \n  <div class=\"toc\">\n    <h2>📋 İÇİNDEKİLER</h2>\n    <ul>\n      ${sections.map(s => `<li><strong>${s.name}</strong>: ${s.articles?.length || 0} haber</li>`).join('')}\n    </ul>\n  </div>\n  \n  ${sectionsHTML}\n  \n  <div class=\"editor-note\">\n    <h2>✍️ Editörün Notu</h2>\n    <p>${mag.editor_note || ''}</p>\n  </div>\n  \n  <div>\n    <h2>🔮 Gelecek Hafta</h2>\n    <p>${mag.next_week_preview || ''}</p>\n  </div>\n  \n  <footer>\n    <p>Otonom Medya Holding | ${mag.date} | Sayı #${mag.issue_number}</p>\n    <p>Yapay Zeka tarafından üretildi | İnsan editör onayı ile yayınlandı</p>\n  </footer>\n</body>\n</html>`;\n}\n\nconst htmlContent = generateHTML(magazine);\n\nreturn [{\n  json: {\n    magazine_data: magazine,\n    html_content: htmlContent,\n    issue_number: magazine.issue_number || 1,\n    date: magazine.date || new Date().toISOString().split('T')[0]\n  }\n}];"
+      },
+      "id": "generate-magazine-html",
+      "name": "Dergi HTML Oluştur",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// HTML'yi dosyaya kaydet\nconst fs = require('fs');\nconst path = require('path');\n\nconst magazineDir = '/data/media/magazine';\nif (!fs.existsSync(magazineDir)) {\n  fs.mkdirSync(magazineDir, { recursive: true });\n}\n\nconst date = $input.first().json.date || new Date().toISOString().split('T')[0];\nconst issueNum = $input.first().json.issue_number || 1;\nconst fileName = `haftalik_${date}_sayi${issueNum}.html`;\nconst filePath = path.join(magazineDir, fileName);\n\nfs.writeFileSync(filePath, $input.first().json.html_content);\n\nconsole.log(`Dergi HTML dosyası oluşturuldu: ${filePath}`);\n\nreturn [{\n  json: {\n    html_path: filePath,\n    html_url: `/media/magazine/${fileName}`,\n    issue_number: issueNum,\n    date: date\n  }\n}];"
+      },
+      "id": "save-magazine-html",
+      "name": "Dergi HTML Kaydet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT email, name, preferences FROM subscribers WHERE is_active = TRUE LIMIT 10000;"
+      },
+      "id": "fetch-subscribers",
+      "name": "Aboneleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SMTP_API_URL || 'http://localhost:587' }}/api/send",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"dergi@otonommedya.com\",\n  \"to\": \"{{ $json.email }}\",\n  \"subject\": \"📰 Otonom Medya Haftalık - Sayı #{{ $('Dergi HTML Kaydet').first().json.issue_number }} ({{ $('Dergi HTML Kaydet').first().json.date }})\",\n  \"html\": \"{{ $json.email_template }}\",\n  \"attachments\": [{\n    \"filename\": \"haftalik_{{ $('Dergi HTML Kaydet').first().json.date }}.html\",\n    \"content\": \"{{ $('Dergi HTML Kaydet').first().json.html_url }}\"\n  }]\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "send-newsletter",
+      "name": "E-posta Bülteni Gönder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CMS_API_URL }}/api/magazine",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.CMS_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"title\": \"Otonom Medya Haftalık - Sayı #{{ $('Dergi HTML Kaydet').first().json.issue_number }}\",\n  \"date\": \"{{ $('Dergi HTML Kaydet').first().json.date }}\",\n  \"issue_number\": {{ $('Dergi HTML Kaydet').first().json.issue_number }},\n  \"html_content\": \"{{ $('Dergi HTML Kaydet').first().json.html_content.substring(0, 50000) }}\",\n  \"status\": \"published\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "publish-magazine",
+      "name": "Dergiyi Web Sitesinde Yayınla",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('09_haftalik_dergi', 'info', 'Haftalık dergi yayınlandı: Sayı #{{ $('Dergi HTML Kaydet').first().json.issue_number }}', '{{ JSON.stringify({issue: $json.issue_number, date: $json.date}).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-magazine",
+      "name": "Dergi Yayınını Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Haftalık Dergi Trigger (Pazar 06:00)": {
+      "main": [
+        [
+          {
+            "node": "Haftanın En İyi İçeriklerini Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Haftanın En İyi İçeriklerini Getir": {
+      "main": [
+        [
+          {
+            "node": "AI Dergi Editörü Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Dergi Editörü Agent": {
+      "main": [
+        [
+          {
+            "node": "Dergi HTML Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dergi HTML Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Dergi HTML Kaydet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dergi HTML Kaydet": {
+      "main": [
+        [
+          {
+            "node": "Aboneleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Dergiyi Web Sitesinde Yayınla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aboneleri Getir": {
+      "main": [
+        [
+          {
+            "node": "E-posta Bülteni Gönder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dergiyi Web Sitesinde Yayınla": {
+      "main": [
+        [
+          {
+            "node": "Dergi Yayınını Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  }
+}

@@ -1,0 +1,190 @@
+{
+  "name": "07_Sistem_Izleme",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-monitor",
+      "name": "Monitoring Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  (SELECT COUNT(*) FROM raw_news WHERE status = 'pending') as pending_news,\n  (SELECT COUNT(*) FROM raw_news WHERE status = 'processing') as processing_news,\n  (SELECT COUNT(*) FROM generated_content WHERE status = 'draft') as draft_content,\n  (SELECT COUNT(*) FROM generated_content WHERE status = 'approved') as approved_content,\n  (SELECT COUNT(*) FROM generated_content WHERE status = 'rejected') as rejected_content,\n  (SELECT COUNT(*) FROM generated_content WHERE status = 'review') as review_content,\n  (SELECT COUNT(*) FROM publications WHERE status = 'failed') as failed_publications,\n  (SELECT COUNT(*) FROM publications WHERE status = 'success') as successful_publications,\n  (SELECT COUNT(*) FROM corporate_memory WHERE applied = FALSE) as unapplied_learning,\n  (SELECT COUNT(*) FROM system_logs WHERE log_level = 'error' AND created_at > NOW() - INTERVAL '1 hour') as recent_errors;"
+      },
+      "id": "get-metrics",
+      "name": "Sistem Metriklerini Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const metrics = $input.first().json;\nconst alerts = [];\nlet healthLevel = 'healthy';\n\n// Eşik değerleri\nif (metrics.pending_news > 100) {\n  alerts.push('⚠️ Bekleyen haber sayısı çok yüksek: ' + metrics.pending_news);\n  healthLevel = 'warning';\n}\nif (metrics.processing_news > 50) {\n  alerts.push('⚠️ İşlenen haber sayısı yüksek: ' + metrics.processing_news);\n  healthLevel = 'warning';\n}\nif (metrics.draft_content > 50) {\n  alerts.push('⚠️ Taslak içerik birikti: ' + metrics.draft_content);\n  healthLevel = 'warning';\n}\nif (metrics.failed_publications > 10) {\n  alerts.push('🚨 Başarısız yayın sayısı kritik: ' + metrics.failed_publications);\n  healthLevel = 'critical';\n}\nif (metrics.unapplied_learning > 20) {\n  alerts.push('⚠️ Uygulanmamış öğrenme birikti: ' + metrics.unapplied_learning);\n  healthLevel = 'warning';\n}\nif (metrics.recent_errors > 5) {\n  alerts.push('🚨 Son 1 saatte çok fazla hata: ' + metrics.recent_errors);\n  healthLevel = 'critical';\n}\nif (metrics.review_content > 10) {\n  alerts.push('⚠️ İnsan incelemesi bekleyen içerik: ' + metrics.review_content);\n  healthLevel = 'warning';\n}\n\nreturn [{\n  json: {\n    timestamp: new Date().toISOString(),\n    metrics: metrics,\n    alerts: alerts,\n    health_level: healthLevel,\n    summary: alerts.length === 0 \n      ? 'Sistem sağlıklı çalışıyor' \n      : `${alerts.length} uyarı var`\n  }\n}];"
+      },
+      "id": "analyze-metrics",
+      "name": "Metrikleri Analiz Et",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.health_level }}",
+              "value2": "critical"
+            }
+          ]
+        }
+      },
+      "id": "if-critical",
+      "name": "IF: Kritik Durum?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('07_sistem_izleme', '{{ $json.health_level === 'critical' ? 'error' : $json.health_level === 'warning' ? 'warning' : 'info' }}', '{{ $json.summary }}', '{{ JSON.stringify($json.metrics).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-metrics",
+      "name": "Metrikleri Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1250,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || '' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 OTONOM MEDYA SİSTEM UYARISI\\n\\nDurum: {{ $json.health_level }}\\nÖzet: {{ $json.summary }}\\n\\n{{ $json.alerts.join('\\n') }}\\n\\nZaman: {{ $json.timestamp }}\",\n  \"channel\": \"#sistem-uyarilari\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-alert",
+      "name": "Kritik Uyarı Gönder (Slack/Discord)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        400
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Monitoring Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sistem Metriklerini Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sistem Metriklerini Getir": {
+      "main": [
+        [
+          {
+            "node": "Metrikleri Analiz Et",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metrikleri Analiz Et": {
+      "main": [
+        [
+          {
+            "node": "IF: Kritik Durum?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Kritik Durum?": {
+      "main": [
+        [
+          {
+            "node": "Kritik Uyarı Gönder (Slack/Discord)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Metrikleri Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kritik Uyarı Gönder (Slack/Discord)": {
+      "main": [
+        [
+          {
+            "node": "Metrikleri Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}

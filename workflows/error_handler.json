@@ -1,0 +1,143 @@
+{
+  "name": "error-handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $input.first().json;\n\n// Hata detaylarını çıkar\nconst workflowName = error.workflow?.name || 'Bilinmiyor';\nconst nodeName = error.execution?.lastNodeExecuted || 'Bilinmiyor';\nconst errorMsg = error.execution?.error?.message || error.trigger?.error?.message || 'Bilinmeyen hata';\nconst errorStack = error.execution?.error?.stack || '';\n\n// Kritiklik seviyesini belirle\nlet severity = 'low';\nif (errorMsg.toLowerCase().includes('timeout') || errorMsg.toLowerCase().includes('connection')) {\n  severity = 'medium';\n}\nif (errorMsg.toLowerCase().includes('auth') || errorMsg.toLowerCase().includes('permission')) {\n  severity = 'high';\n}\nif (errorMsg.toLowerCase().includes('database') || errorMsg.toLowerCase().includes('postgres')) {\n  severity = 'critical';\n}\n\nreturn [{\n  json: {\n    workflow_name: workflowName,\n    node_name: nodeName,\n    error_message: errorMsg,\n    error_stack: errorStack,\n    severity: severity,\n    timestamp: new Date().toISOString(),\n    execution_url: error.execution?.url || ''\n  }\n}];"
+      },
+      "id": "parse-error",
+      "name": "Hatayı Analiz Et",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('error-handler', '{{ $json.severity === 'critical' ? 'error' : $json.severity === 'high' ? 'warning' : 'info' }}', 'Hata: {{ ($json.error_message || '').replace(/'/g, \"''\") }}', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-error",
+      "name": "Hatayı Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        750,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.severity }}",
+              "value2": "critical"
+            }
+          ]
+        }
+      },
+      "id": "if-critical-error",
+      "name": "IF: Kritik Hata?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || '' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 OTONOM MEDYA SİSTEM HATASI\\n\\nSeviye: {{ $json.severity }}\\nWorkflow: {{ $json.workflow_name }}\\nNode: {{ $json.node_name }}\\nHata: {{ $json.error_message }}\\nZaman: {{ $json.timestamp }}\",\n  \"channel\": \"#sistem-hatalari\"\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-critical-alert",
+      "name": "Kritik Hata Uyarısı Gönder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Hatayı Analiz Et",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hatayı Analiz Et": {
+      "main": [
+        [
+          {
+            "node": "Hatayı Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hatayı Logla": {
+      "main": [
+        [
+          {
+            "node": "IF: Kritik Hata?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Kritik Hata?": {
+      "main": [
+        [
+          {
+            "node": "Kritik Hata Uyarısı Gönder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  }
+}

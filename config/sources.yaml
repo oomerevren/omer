@@ -1,0 +1,21 @@
+# Otonom Medya Holdingi - Merkezi Kaynak Listesi
+
+sources:
+  - name: "Webrazzi"
+    url: "https://webrazzi.com/feed/"
+    category: "teknoloji"
+    trust_score_initial: 0.9
+  
+  - name: "Bloomberg HT"
+    url: "https://www.bloomberght.com/rss"
+    category: "ekonomi"
+    trust_score_initial: 0.95
+
+  - name: "Arxiv AI"
+    url: "http://export.arxiv.org/rss/cs.AI"
+    category: "bilim"
+    trust_score_initial: 1.0
+
+settings:
+  min_trust_for_auto_publish: 0.8
+  min_sources_for_critical_news: 2

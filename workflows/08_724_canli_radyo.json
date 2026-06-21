@@ -1,0 +1,233 @@
+{
+  "name": "08_724_Canli_Radyo",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-radio",
+      "name": "Radyo Schedule (1 dk)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT rn.*, gc.article FROM raw_news rn LEFT JOIN generated_content gc ON rn.id = gc.news_id WHERE rn.status = 'approved' AND rn.id NOT IN (SELECT news_id FROM radio_stream WHERE status IN ('broadcasting', 'completed')) ORDER BY rn.published_at DESC LIMIT 1;"
+      },
+      "id": "fetch-news-for-radio",
+      "name": "Radyo İçin Haber Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.article !== null && $json.article !== '' }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-has-article",
+      "name": "IF: Haber Var mı?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.5,
+          "max_tokens": 2000
+        }
+      },
+      "id": "cloud-radio-script",
+      "name": "Mistral Medium (Mistral Cloud) (Radyo Metni)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sen bir radyo haber spikerisin. Aşağıdaki haberi radyo yayın formatına dönüştür.\n\nHaber Başlığı: {{ $json.title }}\nHaber İçeriği: {{ $json.article.substring(0, 3000) }}\n\nGörev:\n1. Haberi 30-60 saniyelik radyo spotuna dönüştür\n2. Konuşma dilinde yaz (radyo spikeri gibi)\n3. Giriş: Dikkat çekici açılış cümlesi\n4. Gelişme: Haberin özeti\n5. Kapanış: Özet ve geçiş cümlesi\n\nSadece radyo metnini döndür, başka hiçbir şey yazma.\nMetin 150-300 kelime arasında olsun.",
+        "options": {
+          "systemMessage": "Sen deneyimli bir radyo haber spikerisin. Haberi dinleyiciye aktaracak şekilde yaz. Konuşma dili kullan."
+        }
+      },
+      "id": "ai-radio-script",
+      "name": "AI Radyo Metni Üretici",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1000,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{ $env.TTS_ENDPOINT }}/v1/audio/speech",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"input\": \"{{ $json.output || $json.content }}\",\n  \"voice\": \"{{ $env.TTS_VOICE || 'turkish-male-1' }}\",\n  \"model\": \"{{ $env.TTS_MODEL || 'mistral-tts' }}\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "generate-radio-audio",
+      "name": "Ses Üret (TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Ses dosyasını kaydet\nconst fs = require('fs');\nconst path = require('path');\n\nconst audioDir = '/data/media/radio';\nif (!fs.existsSync(audioDir)) {\n  fs.mkdirSync(audioDir, { recursive: true });\n}\n\nconst timestamp = new Date().toISOString().replace(/[:.]/g, '-');\nconst fileName = `radio_${timestamp}.mp3`;\nconst filePath = path.join(audioDir, fileName);\n\n// Audio verisini kaydet\nconst audioData = $input.first().json.body || $input.first().binary?.data;\nif (audioData) {\n  if (typeof audioData === 'string') {\n    fs.writeFileSync(filePath, Buffer.from(audioData, 'base64'));\n  } else {\n    fs.writeFileSync(filePath, audioData);\n  }\n}\n\nreturn [{\n  json: {\n    audio_url: `/media/radio/${fileName}`,\n    audio_path: filePath,\n    file_name: fileName,\n    duration_estimate: Math.ceil(($('AI Radyo Metni Üretici').first()?.json?.output || '').split(/\\s+/).length / 2.5),\n    transcript: $('AI Radyo Metni Üretici').first()?.json?.output || ''\n  }\n}];"
+      },
+      "id": "save-radio-audio",
+      "name": "Ses Dosyasını Kaydet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO radio_stream (news_id, content_id, audio_url, transcript, broadcast_at, duration_seconds, status) VALUES ({{ $json.news_id }}, {{ $('Radyo İçin Haber Getir').first()?.json?.id || 'NULL' }}, '{{ $json.audio_url }}', '{{ ($json.transcript || '').replace(/'/g, \"''\") }}', NOW(), {{ $json.duration_estimate || 30 }}, 'completed') RETURNING id;"
+      },
+      "id": "save-radio-log",
+      "name": "Radyo Yayın Kaydı",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1750,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Radyo Schedule (1 dk)": {
+      "main": [
+        [
+          {
+            "node": "Radyo İçin Haber Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Radyo İçin Haber Getir": {
+      "main": [
+        [
+          {
+            "node": "IF: Haber Var mı?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Haber Var mı?": {
+      "main": [
+        [
+          {
+            "node": "AI Radyo Metni Üretici",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Radyo Metni Üretici": {
+      "main": [
+        [
+          {
+            "node": "Ses Üret (TTS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ses Üret (TTS)": {
+      "main": [
+        [
+          {
+            "node": "Ses Dosyasını Kaydet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ses Dosyasını Kaydet": {
+      "main": [
+        [
+          {
+            "node": "Radyo Yayın Kaydı",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  }
+}

@@ -1,0 +1,319 @@
+{
+  "name": "01_Radar_Istihbarat",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name, url, type, category, scrape_interval FROM sources WHERE is_active = TRUE;"
+      },
+      "id": "fetch-sources",
+      "name": "Aktif Kaynakları Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "count": 3,
+            "delay": 5000
+          }
+        }
+      },
+      "id": "fetch-rss",
+      "name": "RSS/API Verisi Çek",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// RSS ve API verilerini parse et\nconst results = [];\n\nfor (const item of $input.all()) {\n  try {\n    const body = item.json.body || item.json;\n    const sourceId = item.json.source_id || 1;\n    const sourceName = item.json.source_name || 'Bilinmeyen';\n    const category = item.json.category || 'genel';\n    \n    // RSS XML parsing (basit regex)\n    const titleMatch = body.match(/<title>(.*?)<\\/title>/g);\n    const linkMatch = body.match(/<link>(.*?)<\\/link>/g);\n    const descMatch = body.match(/<description>(.*?)<\\/description>/g);\n    const pubDateMatch = body.match(/<pubDate>(.*?)<\\/pubDate>/g) || body.match(/<updated>(.*?)<\\/updated>/g);\n    \n    if (titleMatch && titleMatch.length > 1) { // İlk title channel başlığı\n      for (let i = 1; i < titleMatch.length; i++) {\n        const title = titleMatch[i].replace(/<[^>]*>/g, '').trim();\n        const link = linkMatch && linkMatch[i] ? linkMatch[i].replace(/<[^>]*>/g, '').trim() : '';\n        const desc = descMatch && descMatch[i] ? descMatch[i].replace(/<[^>]*>/g, '').trim() : '';\n        const pubDate = pubDateMatch && pubDateMatch[i-1] ? pubDateMatch[i-1].replace(/<[^>]*>/g, '').trim() : new Date().toISOString();\n        \n        if (title && link) {\n          results.push({\n            json: {\n              source_id: sourceId,\n              source_name: sourceName,\n              category: category,\n              title: title,\n              url: link,\n              summary: desc,\n              published_at: pubDate,\n              raw_data: body.substring(0, 5000) // İlk 5000 karakter\n            }\n          });\n        }\n      }\n    }\n  } catch (e) {\n    console.error('Parse hatası:', e.message, 'Kaynak:', item.json.source_name);\n  }\n}\n\nreturn results;"
+      },
+      "id": "parse-rss",
+      "name": "RSS Parse Et",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplication - Aynı haberi farklı kaynaklardan gelenleri tekilleştir\nconst crypto = require('crypto');\n\nconst items = $input.all();\nconst seen = {};\nconst unique = [];\n\nfor (const item of items) {\n  const title = item.json.title || '';\n  const url = item.json.url || '';\n  \n  // Başlık ve URL hash'le\n  const titleHash = crypto.createHash('sha256').update(title.toLowerCase()).digest('hex');\n  const urlHash = crypto.createHash('sha256').update(url.toLowerCase()).digest('hex');\n  \n  // Aynı başlık veya URL'yi daha önce görmedikse ekle\n  if (!seen[titleHash] && !seen[urlHash]) {\n    seen[titleHash] = true;\n    seen[urlHash] = true;\n    item.json.title_hash = titleHash;\n    item.json.content_hash = urlHash;\n    unique.push(item);\n  }\n}\n\nconsole.log(`${items.length} haber geldi, ${unique.length} benzersiz haber kaldı`);\nreturn unique;"
+      },
+      "id": "deduplicate",
+      "name": "Tekrarları Temizle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, title FROM raw_news WHERE title_hash IN ({{ $json.title_hash.map(h => `'${h}'`).join(', ') }}) LIMIT 100;"
+      },
+      "id": "check-existing",
+      "name": "Mevcut Haberleri Kontrol Et",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.1,
+          "response_format": "json_object",
+          "max_tokens": 500
+        }
+      },
+      "id": "cloud-categorize",
+      "name": "Mistral Medium (Mistral Cloud) (Kategorize)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1750,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Aşağıdaki haberin kategorisini ve önem skorunu belirle.\n\nBaşlık: {{ $json.title }}\nÖzet: {{ $json.summary }}\nKaynak: {{ $json.source_name }}\n\nKategoriler: teknoloji, ekonomi, kultur, magazin, bilim\nÖnem skoru: 1-10 arası (10=en önemli)\nDil: tr/en/de/fr vb.\n\nSadece JSON çıktısı ver:\n{\"category\": \"...\", \"importance_score\": 5, \"language\": \"tr\", \"is_news_worthy\": true}",
+        "options": {
+          "systemMessage": "Sen bir haber kategorizasyon uzmanısın. Haberi analiz et ve kategorisini, önem skorunu belirle. Sadece JSON çıktısı ver. Başka hiçbir şey yazma."
+        }
+      },
+      "id": "ai-categorize",
+      "name": "AI Kategorize Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI çıktısını işle ve kaydet\nconst results = [];\n\nfor (const item of $input.all()) {\n  try {\n    const aiOutput = item.json.output || item.json;\n    let category = aiOutput.category || 'genel';\n    let importance = aiOutput.importance_score || 5;\n    let language = aiOutput.language || 'tr';\n    let isNewsWorthy = aiOutput.is_news_worthy !== false;\n    \n    // Kategori doğrulama\n    const validCategories = ['teknoloji', 'ekonomi', 'kultur', 'magazin', 'bilim'];\n    if (!validCategories.includes(category.toLowerCase())) {\n      category = 'genel';\n    }\n    \n    // Önem skoru sınırlama\n    importance = Math.max(1, Math.min(10, importance));\n    \n    if (isNewsWorthy) {\n      results.push({\n        json: {\n          ...item.json,\n          category: category.toLowerCase(),\n          importance_score: importance,\n          language: language.toLowerCase(),\n          status: 'pending'\n        }\n      });\n    }\n  } catch (e) {\n    console.error('AI output parse hatası:', e.message);\n  }\n}\n\nconsole.log(`${results.length} haber kategorize edildi ve kaydedilmeye hazır`);\nreturn results;"
+      },
+      "id": "process-ai-output",
+      "name": "AI Çıktısını İşle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO raw_news (source_id, title, url, summary, category, importance_score, language, title_hash, content_hash, raw_data, status, published_at, scraped_at) VALUES ({{ $json.source_id }}, '{{ $json.title.replace(/'/g, \"''\") }}', '{{ $json.url.replace(/'/g, \"''\") }}', '{{ ($json.summary || '').replace(/'/g, \"''\") }}', '{{ $json.category }}', {{ $json.importance_score }}, '{{ $json.language }}', '{{ $json.title_hash }}', '{{ $json.content_hash }}', '{{ JSON.stringify($json.raw_data || {}).replace(/'/g, \"''\") }}', 'pending', '{{ $json.published_at }}', NOW()) ON CONFLICT (url) DO NOTHING RETURNING id;"
+      },
+      "id": "save-news",
+      "name": "Haberi Kaydet",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2250,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('01_radar_istihbarat', 'info', '{{ $json.message }}', '{{ $json.details::json }}');"
+      },
+      "id": "log-result",
+      "name": "Sonucu Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Aktif Kaynakları Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aktif Kaynakları Getir": {
+      "main": [
+        [
+          {
+            "node": "RSS/API Verisi Çek",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS/API Verisi Çek": {
+      "main": [
+        [
+          {
+            "node": "RSS Parse Et",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS Parse Et": {
+      "main": [
+        [
+          {
+            "node": "Tekrarları Temizle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tekrarları Temizle": {
+      "main": [
+        [
+          {
+            "node": "Mevcut Haberleri Kontrol Et",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mevcut Haberleri Kontrol Et": {
+      "main": [
+        [
+          {
+            "node": "AI Kategorize Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Kategorize Agent": {
+      "main": [
+        [
+          {
+            "node": "AI Çıktısını İşle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Çıktısını İşle": {
+      "main": [
+        [
+          {
+            "node": "Haberi Kaydet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Haberi Kaydet": {
+      "main": [
+        [
+          {
+            "node": "Sonucu Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": "error-handler-workflow-id"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "otonom-medya-holdingi"
+  }
+}

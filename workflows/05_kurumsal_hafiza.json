@@ -1,0 +1,272 @@
+{
+  "name": "05_Kurumsal_Hafiza",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT gc.id as content_id, gc.title, gc.article, gc.category, qc.check_type, qc.result, qc.reason, qc.decision, qc.suggestions FROM generated_content gc JOIN quality_checks qc ON gc.id = qc.content_id WHERE qc.final_decision = 'reject' AND qc.checked_at > NOW() - INTERVAL '6 hours' ORDER BY qc.checked_at DESC LIMIT 50;"
+      },
+      "id": "fetch-rejected",
+      "name": "Reddedilen İçerikleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.3,
+          "response_format": "json_object",
+          "max_tokens": 1000
+        }
+      },
+      "id": "cloud-learn",
+      "name": "Mistral Medium (Mistral Cloud) (Öğrenme)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        750,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Sen bir eğitim analistisin. Reddedilen içeriği analiz et ve sistem için ders çıkar.\n\nİçerik Başlığı: {{ $json.title }}\nİçerik: {{ ($json.article || '').substring(0, 3000) }}\nKategori: {{ $json.category }}\nDenetim Tipi: {{ $json.check_type }}\nRed Nedeni: {{ $json.reason }}\nDenetim Sonucu: {{ $json.result }}\n\nAnaliz:\n1. Hata türü nedir? (fact_check_fail, legal_risk, grammar_error, moderation_fail, other)\n2. Bu hata tekrar eder mi?\n3. Ders çıkar: Bu hata gelecekte nasıl önlenebilir?\n4. Hangi prompt/şablon iyileştirilmeli?\n5. Öncelik seviyesi nedir? (1-10)\n\nJSON çıktısı:\n{\"error_type\": \"...\", \"error_description\": \"...\", \"lesson_learned\": \"...\", \"affected_prompt_type\": \"...\", \"prompt_improvement\": \"...\", \"severity\": 5, \"preventive_measures\": [\"Önlem 1\", \"Önlem 2\"], \"is_recurring\": false}",
+        "options": {
+          "systemMessage": "Sen bir eğitim analistisin. Reddedilen içeriklerden ders çıkar ve sistemin kendini iyileştirmesine yardımcı ol. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-learn-agent",
+      "name": "AI Öğrenme Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Öğrenme verilerini yapılandır\nconst results = [];\n\nfor (const item of $input.all()) {\n  try {\n    const aiOutput = item.json.output || item.json;\n    const learning = typeof aiOutput === 'string' ? JSON.parse(aiOutput) : aiOutput;\n    \n    results.push({\n      json: {\n        content_id: item.json.content_id,\n        error_type: learning.error_type || 'other',\n        error_description: (learning.error_description || item.json.reason || '').substring(0, 500),\n        lesson_learned: (learning.lesson_learned || '').substring(0, 1000),\n        affected_prompt: learning.affected_prompt_type || '',\n        prompt_improvement: (learning.prompt_improvement || '').substring(0, 1000),\n        severity: Math.max(1, Math.min(10, learning.severity || 5)),\n        preventive_measures: JSON.stringify(learning.preventive_measures || []),\n        category: item.json.category || 'genel',\n        is_recurring: learning.is_recurring || false\n      }\n    });\n  } catch (e) {\n    console.error('Öğrenme parse hatası:', e.message);\n  }\n}\n\nconsole.log(`${results.length} öğrenme kaydı yapılandırıldı`);\nreturn results;"
+      },
+      "id": "process-learning",
+      "name": "Öğrenme Verilerini İşle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO corporate_memory (error_type, category, description, lesson_learned, affected_prompt, new_prompt, severity, frequency, applied) VALUES ('{{ $json.error_type }}', '{{ $json.category }}', '{{ ($json.error_description || '').replace(/'/g, \"''\") }}', '{{ ($json.lesson_learned || '').replace(/'/g, \"''\") }}', '{{ ($json.affected_prompt || '').replace(/'/g, \"''\") }}', '{{ ($json.prompt_improvement || '').replace(/'/g, \"''\") }}', {{ $json.severity }}, 1, FALSE) ON CONFLICT DO NOTHING RETURNING id;"
+      },
+      "id": "save-learning",
+      "name": "Öğrenmeyi Kaydet",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1250,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT error_type, COUNT(*) as freq FROM corporate_memory WHERE applied = FALSE GROUP BY error_type ORDER BY freq DESC LIMIT 10;"
+      },
+      "id": "find-recurring",
+      "name": "Tekrarlayan Hataları Bul",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE corporate_memory SET frequency = (SELECT COUNT(*) FROM corporate_memory cm2 WHERE cm2.error_type = corporate_memory.error_type AND cm2.applied = FALSE), updated_at = NOW() WHERE applied = FALSE;"
+      },
+      "id": "update-frequency",
+      "name": "Tekrarlanma Sıklığını Güncelle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('05_kurumsal_hafiza', 'info', '{{ $json.length || $input.all().length }} öğrenme kaydı işlendi', '{{ JSON.stringify({timestamp: new Date().toISOString(), records_processed: $json.length || $input.all().length}).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-result",
+      "name": "Sonucu Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1750,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Reddedilen İçerikleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reddedilen İçerikleri Getir": {
+      "main": [
+        [
+          {
+            "node": "AI Öğrenme Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Öğrenme Agent": {
+      "main": [
+        [
+          {
+            "node": "Öğrenme Verilerini İşle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Öğrenme Verilerini İşle": {
+      "main": [
+        [
+          {
+            "node": "Öğrenmeyi Kaydet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Öğrenmeyi Kaydet": {
+      "main": [
+        [
+          {
+            "node": "Tekrarlayan Hataları Bul",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tekrarlanma Sıklığını Güncelle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tekrarlayan Hataları Bul": {
+      "main": [
+        [
+          {
+            "node": "Sonucu Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tekrarlanma Sıklığını Güncelle": {
+      "main": [
+        [
+          {
+            "node": "Sonucu Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  }
+}

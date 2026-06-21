@@ -1,0 +1,16 @@
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+node_modules/
+logs/
+backups/
+
+postgres_data/
+redis_data/
+n8n_data/
+
+__pycache__/
+.DS_Store

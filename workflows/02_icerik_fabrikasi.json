@@ -1,0 +1,324 @@
+{
+  "name": "02_Icerik_Fabrikasi",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT rn.*, vs.brand_voice, vs.social_media_style FROM raw_news rn LEFT JOIN vertical_settings vs ON rn.category = vs.vertical_name WHERE rn.status = 'pending' AND rn.importance_score >= 6 ORDER BY rn.published_at DESC LIMIT 10;"
+      },
+      "id": "fetch-pending-news",
+      "name": "Bekleyen Önemli Haberleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.importance_score }}",
+              "operation": "largerEqual",
+              "value2": 8
+            }
+          ]
+        }
+      },
+      "id": "if-high-priority",
+      "name": "IF: Yüksek Öncelikli?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.7,
+          "response_format": "json_object",
+          "max_tokens": 4000
+        }
+      },
+      "id": "cloud-large",
+      "name": "Mistral Large (Mistral Cloud) (İçerik Üretici)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-medium-latest",
+        "options": {
+          "temperature": 0.7,
+          "response_format": "json_object",
+          "max_tokens": 4000
+        }
+      },
+      "id": "cloud-medium",
+      "name": "Mistral Medium (Mistral Cloud) (İçerik Üretici)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        400
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Sen profesyonel bir dijital medya içerik üreticisisin.\n\n## HABER BİLGİLERİ\nBaşlık: {{ $json.title }}\nKaynak: {{ $json.source_name || $json.source }}\nÖzet: {{ $json.summary }}\nKategori: {{ $json.category }}\nMarka Sesi: {{ $json.brand_voice || 'Bilgilendirici, güvenilir' }}\n\n## İSTENEN ÇIKTILAR\nAşağıdaki formatta JSON çıktısı üret:\n\n{\n  \"article\": {\n    \"title\": \"SEO uyumlu başlık (max 70 karakter)\",\n    \"slug\": \"url-friendly-slug\",\n    \"content\": \"800-1200 kelimelik SEO uyumlu makale. Alt başlıklar (H2, H3) kullan. Paragraflar kısa ve okunaklı olsun.\",\n    \"meta_description\": \"Meta açıklama (max 160 karakter)\",\n    \"word_count\": 1000\n  },\n  \"social\": {\n    \"twitter_post\": \"BPT tarzı Twitter/X paylaşımı (max 280 karakter). Vurucu başlık + ana nokta + çıkarım + hashtagler\",\n    \"instagram_carousel\": [\n      \"Slayt 1: Kapak metni (max 30 kelime)\",\n      \"Slayt 2: Ana bilgi metni\",\n      \"Slayt 3: Detay/arka plan\",\n      \"Slayt 4: Etki/neden önemli\",\n      \"Slayt 5: Kapanış + CTA\"\n    ],\n    \"linkedin_post\": \"Profesyonel LinkedIn paylaşımı (max 1000 karakter)\"\n  },\n  \"seo\": {\n    \"keywords\": [\"anahtar kelime 1\", \"anahtar kelime 2\", \"anahtar kelime 3\", \"anahtar kelime 4\", \"anahtar kelime 5\"],\n    \"reading_time_minutes\": 5\n  }\n}\n\n## KURALLAR\n- Türkçe yaz\n- Marka sesine uygun ton kullan\n- SEO uyumlu başlık ve meta açıklama\n- Gerçekçi ve doğru bilgiler\n- Telif hakkı ihlali yok\n- Clickbait değil, bilgilendirici\n- Sadece JSON çıktısı ver, başka hiçbir şey yazma",
+        "options": {
+          "systemMessage": "Sen profesyonel bir dijital medya içerik üreticisisin. Türkçe yaz. Her platform için özel içerik üret. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-content-agent",
+      "name": "AI İçerik Üretici Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI çıktısını parse et ve yapılandır\nconst results = [];\n\nfor (const item of $input.all()) {\n  try {\n    const aiOutput = item.json.output || item.json;\n    const content = typeof aiOutput === 'string' ? JSON.parse(aiOutput) : aiOutput;\n    \n    const article = content.article || {};\n    const social = content.social || {};\n    const seo = content.seo || {};\n    \n    results.push({\n      json: {\n        news_id: item.json.id || item.json.news_id,\n        title: article.title || item.json.title,\n        slug: article.slug || article.title?.toLowerCase().replace(/\\s+/g, '-').replace(/[^a-z0-9-]/g, ''),\n        article: article.content || '',\n        meta_description: article.meta_description || '',\n        word_count: article.word_count || (article.content ? article.content.split(/\\s+/).length : 0),\n        reading_time: seo.reading_time_minutes || Math.ceil((article.content || '').split(/\\s+/).length / 200),\n        twitter_post: social.twitter_post || '',\n        instagram_carousel: JSON.stringify(social.instagram_carousel || []),\n        linkedin_post: social.linkedin_post || '',\n        seo_keywords: JSON.stringify(seo.keywords || []),\n        category: item.json.category,\n        status: 'draft',\n        version: 1\n      }\n    });\n  } catch (e) {\n    console.error('İçerik parse hatası:', e.message, 'Haber ID:', item.json.id);\n    // Hata olsa bile minimum veri ile devam et\n    results.push({\n      json: {\n        news_id: item.json.id || item.json.news_id,\n        title: item.json.title,\n        slug: (item.json.title || '').toLowerCase().replace(/\\s+/g, '-').replace(/[^a-z0-9-]/g, ''),\n        article: item.json.summary || '',\n        meta_description: item.json.summary?.substring(0, 160) || '',\n        word_count: (item.json.summary || '').split(/\\s+/).length,\n        reading_time: 1,\n        twitter_post: item.json.title || '',\n        instagram_carousel: '[]',\n        linkedin_post: '',\n        seo_keywords: '[]',\n        category: item.json.category,\n        status: 'draft',\n        version: 1\n      }\n    });\n  }\n}\n\nconsole.log(`${results.length} içerik üretildi ve yapılandırıldı`);\nreturn results;"
+      },
+      "id": "process-content",
+      "name": "İçerik Parse Et ve Yapılandır",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO generated_content (news_id, title, slug, article, meta_description, twitter_post, instagram_carousel, linkedin_post, seo_keywords, category, word_count, reading_time, status, version) VALUES ({{ $json.news_id }}, '{{ ($json.title || '').replace(/'/g, \"''\") }}', '{{ ($json.slug || '').replace(/'/g, \"''\") }}', '{{ ($json.article || '').replace(/'/g, \"''\") }}', '{{ ($json.meta_description || '').replace(/'/g, \"''\") }}', '{{ ($json.twitter_post || '').replace(/'/g, \"''\") }}', '{{ $json.instagram_carousel }}', '{{ ($json.linkedin_post || '').replace(/'/g, \"''\") }}', '{{ $json.seo_keywords }}', '{{ $json.category }}', {{ $json.word_count || 0 }}, {{ $json.reading_time || 1 }}, '{{ $json.status }}', {{ $json.version }}) RETURNING id;"
+      },
+      "id": "save-content",
+      "name": "İçeriği Kaydet",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1750,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE raw_news SET status = 'processing' WHERE id = {{ $json.news_id }};"
+      },
+      "id": "update-news-status",
+      "name": "Haber Durumunu Güncelle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('02_icerik_fabrikasi', 'info', 'İçerik üretildi: {{ $json.title }}', '{{ JSON.stringify({news_id: $json.news_id, word_count: $json.word_count, category: $json.category}).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-result",
+      "name": "Sonucu Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2250,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Bekleyen Önemli Haberleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bekleyen Önemli Haberleri Getir": {
+      "main": [
+        [
+          {
+            "node": "IF: Yüksek Öncelikli?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Yüksek Öncelikli?": {
+      "main": [
+        [
+          {
+            "node": "Mistral Large (İçerik Üretici)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mistral Medium (İçerik Üretici)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mistral Large (İçerik Üretici)": {
+      "main": [
+        [
+          {
+            "node": "AI İçerik Üretici Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mistral Medium (İçerik Üretici)": {
+      "main": [
+        [
+          {
+            "node": "AI İçerik Üretici Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI İçerik Üretici Agent": {
+      "main": [
+        [
+          {
+            "node": "İçerik Parse Et ve Yapılandır",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçerik Parse Et ve Yapılandır": {
+      "main": [
+        [
+          {
+            "node": "İçeriği Kaydet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçeriği Kaydet": {
+      "main": [
+        [
+          {
+            "node": "Haber Durumunu Güncelle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Haber Durumunu Güncelle": {
+      "main": [
+        [
+          {
+            "node": "Sonucu Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": "error-handler-workflow-id"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "otonom-medya-holdingi"
+  }
+}

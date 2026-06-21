@@ -1,0 +1,397 @@
+{
+  "name": "04_Yayin_Dagitim",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT gc.*, rn.title as news_title, rn.url as news_url, rn.source as news_source FROM generated_content gc JOIN raw_news rn ON gc.news_id = rn.id WHERE gc.status = 'approved' ORDER BY gc.created_at ASC LIMIT 20;"
+      },
+      "id": "fetch-approved",
+      "name": "Onaylanan İçerikleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.CMS_API_URL }}/api/posts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.CMS_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"title\": \"{{ $json.title }}\",\n  \"slug\": \"{{ $json.slug }}\",\n  \"content\": {{ JSON.stringify($json.article).replace(/'/g, \"''\") }},\n  \"meta_description\": \"{{ ($json.meta_description || '').replace(/'/g, \"''\") }}\",\n  \"category\": \"{{ $json.category }}\",\n  \"tags\": {{ $json.seo_keywords }},\n  \"status\": \"published\",\n  \"author\": \"Otonom Medya AI\",\n  \"source_url\": \"{{ $json.news_url }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "publish-web",
+      "name": "Web Sitesine Yayınla",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twitter.com/2/tweets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.TWITTER_BEARER_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"text\": \"{{ ($json.twitter_post || '').replace(/'/g, \"''\") }}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "publish-twitter",
+      "name": "Twitter/X'e Paylaş",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.INSTAGRAM_API_URL }}/media",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.INSTAGRAM_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"image_url\": \"{{ $json.carousel_image_url }}\",\n  \"caption\": \"{{ ($json.instagram_carousel || '').replace(/'/g, \"''\") }}\",\n  \"media_type\": \"CAROUSEL\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "publish-instagram",
+      "name": "Instagram'a Paylaş",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TTS_ENDPOINT }}/v1/audio/speech",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"input\": \"{{ ($json.article || $json.news_title || '').substring(0, 2000).replace(/'/g, \"''\") }}\",\n  \"voice\": \"{{ $env.TTS_VOICE || 'turkish-female-1' }}\",\n  \"model\": \"{{ $env.TTS_MODEL || 'mistral-tts' }}\",\n  \"response_format\": \"mp3\"\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "generate-audio",
+      "name": "Sesli Haber Üret (TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        750,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "merge-publications",
+      "name": "Dağıtım Sonuçlarını Birleştir",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1000,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dağıtım sonuçlarını işle\nconst results = [];\nconst platforms = ['website', 'twitter', 'instagram', 'audio'];\n\nfor (const item of $input.all()) {\n  for (const platform of platforms) {\n    const response = item.json[platform] || {};\n    results.push({\n      json: {\n        content_id: item.json.content_id || item.json.id,\n        platform: platform,\n        platform_post_id: response.id || response.post_id || response.media_id || null,\n        platform_url: response.url || response.permalink || null,\n        status: response.status === 200 || response.status === 201 ? 'success' : 'failed',\n        error_message: response.error || response.message || null,\n        published_at: new Date().toISOString()\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "process-results",
+      "name": "Dağıtım Sonuçlarını İşle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO publications (content_id, platform, platform_post_id, platform_url, published_at, status, error_message) VALUES ({{ $json.content_id }}, '{{ $json.platform }}', '{{ ($json.platform_post_id || '').replace(/'/g, \"''\") }}', '{{ ($json.platform_url || '').replace(/'/g, \"''\") }}', '{{ $json.published_at }}', '{{ $json.status }}', '{{ ($json.error_message || '').replace(/'/g, \"''\") }}') RETURNING id;"
+      },
+      "id": "save-publication",
+      "name": "Yayın Kaydını Oluştur",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE generated_content SET status = 'published', updated_at = NOW() WHERE id = {{ $json.content_id }};"
+      },
+      "id": "mark-published",
+      "name": "İçeriği Yayınlandı İşaretle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1750,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('04_yayin_dagitim', '{{ $json.status === 'success' ? 'info' : 'warning' }}', 'Platform: {{ $json.platform }} - Durum: {{ $json.status }}', '{{ JSON.stringify($json).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-result",
+      "name": "Dağıtımı Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2000,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Onaylanan İçerikleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Onaylanan İçerikleri Getir": {
+      "main": [
+        [
+          {
+            "node": "Web Sitesine Yayınla",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Twitter/X'e Paylaş",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram'a Paylaş",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sesli Haber Üret (TTS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Web Sitesine Yayınla": {
+      "main": [
+        [
+          {
+            "node": "Dağıtım Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Twitter/X'e Paylaş": {
+      "main": [
+        [
+          {
+            "node": "Dağıtım Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Instagram'a Paylaş": {
+      "main": [
+        [
+          {
+            "node": "Dağıtım Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Sesli Haber Üret (TTS)": {
+      "main": [
+        [
+          {
+            "node": "Dağıtım Sonuçlarını Birleştir",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Dağıtım Sonuçlarını Birleştir": {
+      "main": [
+        [
+          {
+            "node": "Dağıtım Sonuçlarını İşle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dağıtım Sonuçlarını İşle": {
+      "main": [
+        [
+          {
+            "node": "Yayın Kaydını Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yayın Kaydını Oluştur": {
+      "main": [
+        [
+          {
+            "node": "İçeriği Yayınlandı İşaretle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "İçeriği Yayınlandı İşaretle": {
+      "main": [
+        [
+          {
+            "node": "Dağıtımı Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "errorWorkflow": "error-handler-workflow-id"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "otonom-medya-holdingi"
+  }
+}

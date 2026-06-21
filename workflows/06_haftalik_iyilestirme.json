@@ -1,0 +1,347 @@
+{
+  "name": "06_Haftalik_Iyilestirme",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 7,
+              "triggerAtHour": 3,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-weekly",
+      "name": "Haftalık Trigger (Pazar 03:00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT cm.*, COUNT(*) OVER (PARTITION BY cm.error_type) as type_count FROM corporate_memory cm WHERE cm.applied = FALSE ORDER BY cm.severity DESC, cm.created_at DESC LIMIT 100;"
+      },
+      "id": "fetch-unapplied",
+      "name": "Uygulanmamış Öğrenmeleri Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT template_name, template_text, template_type, category FROM prompt_templates WHERE is_active = TRUE;"
+      },
+      "id": "fetch-templates",
+      "name": "Mevcut Prompt Şablonlarını Getir",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        500,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "mistral-large-latest",
+        "options": {
+          "temperature": 0.2,
+          "response_format": "json_object",
+          "max_tokens": 8000
+        }
+      },
+      "id": "cloud-optimize",
+      "name": "Mistral Large (Mistral Cloud) (Optimizasyon)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        750,
+        200
+      ],
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "2",
+          "name": "Mistral API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Sen bir kıdemli prompt mühendisisin. Aşağıdaki verileri analiz et ve mevcut prompt şablonlarını optimize et.\n\n## Uygulanmamış Öğrenmeler (hata kayıtları):\n{{ $json.learning_entries }}\n\n## Mevcut Prompt Şablonları:\n{{ $json.current_templates }}\n\n## Görev:\n1. Her hata türünü analiz et\n2. İlgili prompt şablonunu belirle\n3. Prompt'u iyileştir (daha net talimatlar, daha az hata riski)\n4. Yeni prompt şablonu oluştur\n5. İyileştirme nedenini açıkla\n\n## Çıktı Formatı (JSON):\n{\n  \"optimized_templates\": [\n    {\n      \"template_name\": \"mevcut_şablon_adı\",\n      \"current_prompt\": \"mevcut_prompt\",\n      \"optimized_prompt\": \"yeni_prompt\",\n      \"reason\": \"iyileştirme_nedeni\",\n      \"related_errors\": [\"hata_türü_1\", \"hata_türü_2\"]\n    }\n  ],\n  \"new_templates\": [\n    {\n      \"template_name\": \"yeni_şablon_adı\",\n      \"template_text\": \"yeni_prompt_metni\",\n      \"template_type\": \"article|social|quality_check|learning\",\n      \"category\": \"teknoloji|ekonomi|kultur|magazin|bilim|genel\"\n    }\n  ],\n  \"summary\": \"Genel iyileştirme özeti\"\n}",
+        "options": {
+          "systemMessage": "Sen kıdemli bir prompt mühendisisin. Öğrenme girdilerini analiz et ve prompt şablonlarını optimize et. Sistemin kendini sürekli iyileştirmesini sağla. Sadece JSON çıktısı ver."
+        }
+      },
+      "id": "ai-optimize-agent",
+      "name": "AI Optimizasyon Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.6,
+      "position": [
+        750,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Optimizasyon sonuçlarını parse et\nconst results = [];\n\nfor (const item of $input.all()) {\n  try {\n    const aiOutput = item.json.output || item.json;\n    const optimization = typeof aiOutput === 'string' ? JSON.parse(aiOutput) : aiOutput;\n    \n    // Optimize edilmiş şablonları işle\n    if (optimization.optimized_templates) {\n      for (const tmpl of optimization.optimized_templates) {\n        results.push({\n          json: {\n            action: 'optimize',\n            template_name: tmpl.template_name,\n            current_prompt: tmpl.current_prompt,\n            optimized_prompt: tmpl.optimized_prompt,\n            reason: tmpl.reason,\n            related_errors: JSON.stringify(tmpl.related_errors || [])\n          }\n        });\n      }\n    }\n    \n    // Yeni şablonları işle\n    if (optimization.new_templates) {\n      for (const tmpl of optimization.new_templates) {\n        results.push({\n          json: {\n            action: 'create',\n            template_name: tmpl.template_name,\n            template_text: tmpl.template_text,\n            template_type: tmpl.template_type,\n            category: tmpl.category\n          }\n        });\n      }\n    }\n  } catch (e) {\n    console.error('Optimizasyon parse hatası:', e.message);\n  }\n}\n\nconsole.log(`${results.length} şablon işlemi hazırlandı`);\nreturn results;"
+      },
+      "id": "parse-optimized",
+      "name": "Optimizasyon Sonuçlarını Parse Et",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action }}",
+              "value2": "optimize"
+            }
+          ]
+        }
+      },
+      "id": "if-optimize",
+      "name": "IF: Optimize mi?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE prompt_templates SET template_text = '{{ ($json.optimized_prompt || '').replace(/'/g, \"''\") }}', updated_at = NOW(), version = version + 1 WHERE template_name = '{{ ($json.template_name || '').replace(/'/g, \"''\") }}';"
+      },
+      "id": "update-template",
+      "name": "Mevcut Şablonu Güncelle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO prompt_templates (template_name, template_text, template_type, category, version, is_active) VALUES ('{{ ($json.template_name || '').replace(/'/g, \"''\") }}', '{{ ($json.template_text || '').replace(/'/g, \"''\") }}', '{{ ($json.template_type || 'general').replace(/'/g, \"''\") }}', '{{ ($json.category || 'genel').replace(/'/g, \"''\") }}', 1, TRUE) ON CONFLICT (template_name) DO UPDATE SET template_text = EXCLUDED.template_text, version = version + 1, updated_at = NOW() RETURNING id;"
+      },
+      "id": "create-template",
+      "name": "Yeni Şablon Oluştur",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1500,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE corporate_memory SET applied = TRUE, applied_at = NOW() WHERE applied = FALSE;"
+      },
+      "id": "mark-applied",
+      "name": "Öğrenmeleri Uygulandı İşaretle",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        1750,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO system_logs (workflow_name, log_level, message, details) VALUES ('06_haftalik_iyilestirme', 'info', 'Haftalık iyileştirme tamamlandı: {{ $json.length || $input.all().length }} şablon işlemi', '{{ JSON.stringify({timestamp: new Date().toISOString(), templates_updated: $json.length || $input.all().length}).replace(/'/g, \"''\") }}');"
+      },
+      "id": "log-result",
+      "name": "Sonucu Logla",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        2000,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "Medya PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Haftalık Trigger (Pazar 03:00)": {
+      "main": [
+        [
+          {
+            "node": "Uygulanmamış Öğrenmeleri Getir",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mevcut Prompt Şablonlarını Getir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uygulanmamış Öğrenmeleri Getir": {
+      "main": [
+        [
+          {
+            "node": "AI Optimizasyon Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mevcut Prompt Şablonlarını Getir": {
+      "main": [
+        [
+          {
+            "node": "AI Optimizasyon Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Optimizasyon Agent": {
+      "main": [
+        [
+          {
+            "node": "Optimizasyon Sonuçlarını Parse Et",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optimizasyon Sonuçlarını Parse Et": {
+      "main": [
+        [
+          {
+            "node": "IF: Optimize mi?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Optimize mi?": {
+      "main": [
+        [
+          {
+            "node": "Mevcut Şablonu Güncelle",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Yeni Şablon Oluştur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mevcut Şablonu Güncelle": {
+      "main": [
+        [
+          {
+            "node": "Öğrenmeleri Uygulandı İşaretle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yeni Şablon Oluştur": {
+      "main": [
+        [
+          {
+            "node": "Öğrenmeleri Uygulandı İşaretle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Öğrenmeleri Uygulandı İşaretle": {
+      "main": [
+        [
+          {
+            "node": "Sonucu Logla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Istanbul",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "otonom-medya-holdingi"
+  }
+}
